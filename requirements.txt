@@ -1,0 +1,2 @@
+drawsvg==2.4.0
+drawsvg[all]==2.4.0
