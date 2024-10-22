@@ -1,34 +1,51 @@
 import math
 from typing import List
-import random
-from copy import deepcopy
+
+import PIL.ImagePalette
 import drawsvg as draw
 from drawsvg import Lines, Group
+import threading
+import lottie
+import os
 
 debug_figures = False
 # Mice starting circle
 debug_figures_starting_circle = True
 debug_figures_position_group_dot = True
-remove_duplicate_lines = False
+remove_duplicate_lines = True
 
 # Mice
 mice_count = 3 # How many mice
 #step_size = 10 # How much each mouse moves in each step
-target_distance_scale = 0.035 # How much each mouse moves towards the target
-distance = 2000 # Distance between the mice and 0,0
+target_distance_scale = .035 # How much each mouse moves towards the target
+distance = 200 # Distance between the mice and 0,0
 step_count = 50 # Number of steps
 rotation = 0 # Rotation offset for mice positioning
 mice_group_count = 5 # Number of mice groups
-
-# Animation
-enable_animation = True# Enable or disable the animation
-animation_duration_ms = 1000 # Duration of the animation in milliseconds
-begin_ms = 0 # Start time of the animation in milliseconds
-infinite_repeat = True # Repeat the animation infinitely
+reverse = False
 cross_hatch = False # Cross hatch the lines
 
+# Animation
+enable_animation = True # Enable or disable the animation
+animation_duration_ms = 2000 # Duration of the animation in milliseconds
+begin_ms = 0 # Start time of the animation in milliseconds
+infinite_repeat = True # Repeat the animation infinitely
+
+# Export options
+export_svg = True # Export the animation as an SVG file
+export_png = False # Export the first frame as a PNG file
+export_mp4 = False # Export the animation as an MP4 file
+export_gif = False # Export the animation as a GIF file
+export_frames = False # Export the animation as individual frames
+export_spritesheet = False # Export the animation as a spritesheet
+export_webp = False # Export the animation as a webp file (requires export_frames to be True)
+gif_from_frames = False # Create a GIF from the frames (requires export_frames to be True)
+
+fps = 120
+
 # Canvas
-target_resolution = 2000
+target_resolution = 1000
+line_width_scale = 0.001
 # defining the offset required to place the corner of a group at 0,0
 angle =  2 * math.pi / mice_count
 start_x = -distance * math.cos(angle)
@@ -51,20 +68,40 @@ if 'target_resolution' in locals():
     start_x *= scale
     start_y *= scale
 
-line_width = 0.001*resolution
+line_width = resolution*line_width_scale
 
 canvas = draw.Drawing(resolution, resolution, origin="center",
         animation_config=draw.types.SyncedAnimationConfig(
             # Animation configuration
             duration=animation_duration_ms/1000,  # Seconds
             #show_playback_progress=True,
-            #show_playback_controls=True)
+            #show_playback_controls=True
             )
         )
 
 
 #set the background color
-canvas.append(draw.Rectangle(-resolution/2, -resolution/2, resolution, resolution, fill='None'))
+canvas.append(draw.Rectangle(-resolution/2, -resolution/2, resolution, resolution, fill='black',href="https://github.com/Cyph1x"))
+
+class Line(draw.DrawingBasicElement):
+    '''A line element that uses the SVG <line> tag.
+
+    The endpoints of this custom Line element can be animated.  This is a workaround because `drawsvg.Line`
+    cannot be animated.'''
+    TAG_NAME = 'line'
+
+    def __init__(self, x1, y1, x2, y2, **kwargs):
+        super().__init__(x1=x1, y1=y1, x2=x2, y2=y2, **kwargs)
+
+class PolyLine(draw.DrawingBasicElement):
+    '''A line element that uses the SVG <line> tag.
+
+    The endpoints of this custom Line element can be animated.  This is a workaround because `drawsvg.Line`
+    cannot be animated.'''
+    TAG_NAME = 'polyline'
+
+    def __init__(self, points, **kwargs):
+        super().__init__(points=points, **kwargs)
 
 class Mouse:
     def __init__(self, x, y):
@@ -81,6 +118,24 @@ class Mouse:
 
     def get_position(self):
         return (self.x, self.y)
+
+    def get_rounded_position(self):
+        # using the canvas resolution there should be the same number of pixels between each mouse
+        unit_count = resolution / group_distance
+        x = round(self.x * unit_count) / unit_count
+        y = round(self.y * unit_count) / unit_count
+        return (x, y)
+
+    def get_new_position(self):
+        return (self.new_x, self.new_y)
+
+    def get_rounded_new_position(self):
+        # using the canvas resolution there should be the same number of pixels between each mouse
+        unit_count = resolution / group_distance
+        x = round(self.new_x * unit_count) / unit_count
+        y = round(self.new_y * unit_count) / unit_count
+
+        return (x, y)
 
     def get_target_distance(self):
         # move towards the target by step_size
@@ -126,8 +181,14 @@ class MouseLines:
         self.begin_ms = begin_ms
         self.repeat = repeat
         self.new_mice = []
+        self.stroke_linecap = "round"
+        self.stroke_linejoin = "round"
+        self.shape_rendering = "geometricPrecision"
+        self.make_individual_lines = True
+        self.make_polylines = False
+        self.use_keyframes = False
 
-    def generate_mice_lines(self,g: draw.Group=None,t=0):
+    def generate_mice_lines(self,g: draw.Group=None):
         new_mice = []
         if g is None:
             g = draw.Group()
@@ -154,38 +215,122 @@ class MouseLines:
             mouse_lines = []
             target_lines = []
             for mouse in new_mice:
-                x1, y1 = mouse.get_position()
-                x2, y2 = mouse.get_target().get_position()
-                x3, y3 = mouse.new_x, mouse.new_y
-                x4, y4 = mouse.get_target().new_x, mouse.get_target().new_y
-                #interpolate the x1,y1,x2,y2,x3,y3,x4,y4
-                x1,y1 = x1 + (x3-x1)*t, y1 + (y3-y1)*t
-                x2,y2 = x2 + (x4-x2)*t, y2 + (y4-y2)*t
+                x1, y1 = mouse.get_rounded_position()
+                x2, y2 = mouse.get_target().get_rounded_position()
+                x3, y3 = mouse.get_rounded_new_position()
+                x4, y4 = mouse.get_target().get_rounded_new_position()
+                if self.make_individual_lines:
+                    mouse_lines.append((x1, y1, x2, y2))
+                    target_lines.append((x3, y3, x4, y4))
+                elif self.make_polylines:
+                    mouse_lines.extend([str(x1), str(y1), str(x2), str(y2)])
+                    target_lines.extend([str(x3), str(y3), str(x4), str(y4)])
+                else:
+                    mouse_lines.extend([x1, y1, x2, y2])
+                    target_lines.extend([x3, y3, x4, y4])
 
-                mouse_lines.extend([x1, y1, x2, y2])
-                target_lines.extend([x3, y3, x4, y4])
 
-            mouse_lines = draw.Lines(*mouse_lines, close=True, fill='none', stroke=self.colour, stroke_width=line_width,
-                                     opacity=self.opacity)
-            target_lines = draw.Lines(*target_lines, close=True, fill='none', stroke=self.colour, stroke_width=line_width,
-                                      opacity=self.opacity)
 
             repeat_count = 'indefinite' if self.repeat else 1
 
-            if self.reverse:
-                if enable_animation:
-                    mouse_lines.append_anim(
-                        draw.Animate(attributeName='d', to=target_lines.args["d"], begin=f"{self.begin_ms}ms",
-                                     dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
-                lines = mouse_lines
-            else:
-                if enable_animation:
-                    target_lines.append_anim(
-                        draw.Animate(attributeName='d', to=mouse_lines.args["d"], begin=f"{self.begin_ms}ms",
-                                     dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
-                lines = target_lines
+            if self.make_individual_lines:
+                lines = []
+                for i in range(self.n):
+                    line = Line(*mouse_lines[i], stroke=self.colour, stroke_width=self.line_width,
+                                opacity=self.opacity, stroke_linecap=self.stroke_linecap, stroke_linejoin=self.stroke_linejoin, shape_rendering=self.shape_rendering)
+                    if enable_animation:
+                        if self.reverse:
+                            if self.use_keyframes:
+                                line.add_key_frame(0, x1=mouse_lines[i][0],
+                                                   y1=mouse_lines[i][1], x2=mouse_lines[i][2], y2=mouse_lines[i][3])
+                                line.add_key_frame(animation_duration_ms / 1000, x1=target_lines[i][0],
+                                                   y1=target_lines[i][1], x2=target_lines[i][2], y2=target_lines[i][3])
+                            else:
+                                line.append_anim(draw.Animate(attributeName='x1',
+                                                              from_or_values=mouse_lines[i][0],
+                                                              to=target_lines[i][0], begin=f"{self.begin_ms}ms",
+                                                              dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
+                                line.append_anim(draw.Animate(attributeName='y1',
+                                                              from_or_values=mouse_lines[i][1],
+                                                              to=target_lines[i][1], begin=f"{self.begin_ms}ms",
+                                                              dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
+                                line.append_anim(draw.Animate(attributeName='x2',
+                                                              from_or_values=mouse_lines[i][2],
+                                                              to=target_lines[i][2], begin=f"{self.begin_ms}ms",
+                                                              dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
+                                line.append_anim(draw.Animate(attributeName='y2',
+                                                              from_or_values=mouse_lines[i][3],
+                                                              to=target_lines[i][3], begin=f"{self.begin_ms}ms",
+                                                              dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
 
-            g.append(lines)
+                        else:
+                            if self.use_keyframes:
+                                line.add_key_frame(0, x1=target_lines[i][0],
+                                                   y1=target_lines[i][1], x2=target_lines[i][2], y2=target_lines[i][3])
+                                line.add_key_frame(animation_duration_ms / 1000, x1=mouse_lines[i][0],
+                                                   y1=mouse_lines[i][1], x2=mouse_lines[i][2], y2=mouse_lines[i][3])
+
+                            else:
+                                line.append_anim(draw.Animate(attributeName='x1',
+                                                              from_or_values=target_lines[i][0],
+                                                              to=mouse_lines[i][0], begin=f"{self.begin_ms}ms",
+                                                              dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
+                                line.append_anim(draw.Animate(attributeName='y1',
+                                                              from_or_values=target_lines[i][1],
+                                                              to=mouse_lines[i][1], begin=f"{self.begin_ms}ms",
+                                                              dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
+                                line.append_anim(draw.Animate(attributeName='x2',
+                                                              from_or_values=target_lines[i][2],
+                                                              to=mouse_lines[i][2], begin=f"{self.begin_ms}ms",
+                                                              dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
+                                line.append_anim(draw.Animate(attributeName='y2',
+                                                              from_or_values=target_lines[i][3],
+                                                              to=mouse_lines[i][3], begin=f"{self.begin_ms}ms",
+                                                              dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
+                        #line.add_key_frame(0, x1=target_lines[i][0], y1=target_lines[i][1], x2=target_lines[i][2], y2=target_lines[i][3])
+                            #line.add_key_frame(animation_duration_ms/1000, x1=mouse_lines[i][0], y1=mouse_lines[i][1], x2=mouse_lines[i][2], y2=mouse_lines[i][3])
+                    lines.append(line)
+            elif self.make_polylines:
+                if self.make_polylines:
+                    mouse_lines = PolyLine(" ".join(mouse_lines), fill='none', stroke=self.colour, stroke_width=self.line_width, opacity=self.opacity, stroke_linecap=self.stroke_linecap, stroke_linejoin=self.stroke_linejoin, shape_rendering=self.shape_rendering)
+                    target_lines = PolyLine(" ".join(target_lines), fill='none', stroke=self.colour, stroke_width=self.line_width, opacity=self.opacity, stroke_linecap=self.stroke_linecap, stroke_linejoin=self.stroke_linejoin, shape_rendering=self.shape_rendering)
+
+                if self.reverse:
+                    if enable_animation:
+                        mouse_lines.append_anim(
+                            draw.Animate(attributeName='points', from_or_values=mouse_lines.args["points"], to=target_lines.args["points"], begin=f"{self.begin_ms}ms",
+                                         dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
+                    lines = mouse_lines
+                else:
+                    if enable_animation:
+                        target_lines.append_anim(
+                            draw.Animate(attributeName='points', from_or_values=target_lines.args["points"], to=mouse_lines.args["points"], begin=f"{self.begin_ms}ms",
+                                         dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
+                    lines = target_lines
+            else:
+
+                mouse_lines = draw.Lines(*mouse_lines, close=True, fill='none', stroke=self.colour, stroke_width=line_width, opacity=self.opacity, stroke_linecap=self.stroke_linecap, stroke_linejoin=self.stroke_linejoin, shape_rendering=self.shape_rendering)
+                target_lines = draw.Lines(*target_lines, close=True, fill='none', stroke=self.colour, stroke_width=line_width, opacity=self.opacity, stroke_linecap=self.stroke_linecap, stroke_linejoin=self.stroke_linejoin, shape_rendering=self.shape_rendering)
+
+
+
+                if self.reverse:
+                    if enable_animation:
+                        mouse_lines.append_anim(
+                            draw.Animate(attributeName='d', from_or_values=mouse_lines.args["d"], to=target_lines.args["d"], begin=f"{self.begin_ms}ms",
+                                         dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
+                    lines = mouse_lines
+                else:
+                    if enable_animation:
+                        target_lines.append_anim(
+                            draw.Animate(attributeName='d', from_or_values=target_lines.args["d"], to=mouse_lines.args["d"], begin=f"{self.begin_ms}ms",
+                                         dur=f"{animation_duration_ms}ms", repeatCount=repeat_count))
+                    lines = target_lines
+            if self.make_individual_lines:
+                for line in lines:
+                    g.append(line)
+            else:
+                g.append(lines)
             for mouse in new_mice:
                 mouse.update_position()
         return g
@@ -197,24 +342,29 @@ class MouseGroup:
     def AddMouseLines(self, mouse_lines: MouseLines):
         self.mice.append(mouse_lines)
 
-    def generate_mice_lines(self,g: draw.Group = None,t: float = 0):
+    def generate_mice_lines(self,g: draw.Group = None):
         if g is None:
             g = draw.Group()
+        #for i in range(len(self.mice)):
+        #    self.mice[len(self.mice)-1-i].generate_mice_lines(g)
         for mouse in self.mice:
-            mouse.generate_mice_lines(g,t)
+            mouse.generate_mice_lines(g)
         return g
 
+
+
 forward_animation_group = MouseGroup()
-forward_animation = MouseLines(mice_count, step_count, distance, rotation,reverse=False,colour='black',line_width=line_width,opacity=0.5,begin_ms=begin_ms)
+forward_animation = MouseLines(mice_count, step_count, distance, rotation,reverse=False,colour='black',line_width=line_width,opacity=1,begin_ms=begin_ms)
 forward_animation_group.AddMouseLines(forward_animation)
-forward_animation = MouseLines(mice_count, step_count, distance, rotation,reverse=False,colour='white',line_width=line_width,opacity=0.5,begin_ms=begin_ms)
+forward_animation = MouseLines(mice_count, step_count, distance, rotation,reverse=False,colour='white',line_width=line_width/2,opacity=1,begin_ms=begin_ms)
 forward_animation_group.AddMouseLines(forward_animation)
 
 reverse_animation_group = MouseGroup()
-reverse_animation = MouseLines(mice_count, step_count, distance, rotation,reverse=True,colour='black',line_width=line_width,opacity=0.5,begin_ms=begin_ms)
+reverse_animation = MouseLines(mice_count, step_count, distance, rotation,reverse=True,colour='black',line_width=line_width,opacity=1,begin_ms=begin_ms)
 reverse_animation_group.AddMouseLines(reverse_animation)
-reverse_animation = MouseLines(mice_count, step_count, distance, rotation,reverse=True,colour='white',line_width=line_width,opacity=0.5,begin_ms=begin_ms)
+reverse_animation = MouseLines(mice_count, step_count, distance, rotation,reverse=True,colour='white',line_width=line_width/2,opacity=1,begin_ms=begin_ms)
 reverse_animation_group.AddMouseLines(reverse_animation)
+
 
 
 group_positions = [(start_x, start_y, rotation)]
@@ -284,15 +434,14 @@ for i in range(mice_group_count):
     group_position_layers.append(new_positions)
     prev_positions = new_positions
 
-reverse = False
-#occupied_positions = set()
+occupied_positions = set()
 reverse_positions = set()
 forward_positions = set()
 for i, group_positions in enumerate(group_position_layers):
     for group_position in group_positions:
-        #if (round(group_position[0],2), round(group_position[1],2)) in occupied_positions:
-        #    continue
-        #occupied_positions.add((round(group_position[0],2), round(group_position[1],2)))
+        if (round(group_position[0],2), round(group_position[1],2)) in occupied_positions and remove_duplicate_lines:
+            continue
+        occupied_positions.add((round(group_position[0],2), round(group_position[1],2)))
         if reverse:
             reverse_positions.add(group_position)
         else:
@@ -302,12 +451,27 @@ for i, group_positions in enumerate(group_position_layers):
 
 forward_animation_group_generated = forward_animation_group.generate_mice_lines()
 reverse_animation_group_generated = reverse_animation_group.generate_mice_lines()
+
+def check_circle_within_bounds(x: float, y: float, radius: float):
+    max_x = radius+x
+    min_x = -radius+x
+    max_y = radius+y
+    min_y = -radius+y
+    if min_x > resolution/2 or max_x < -resolution/2:
+        return False
+    if min_y > resolution/2 or max_y < -resolution/2:
+        return False
+    return True
 for x, y, rotation in forward_positions:
+    if not check_circle_within_bounds(x, y, distance):
+        continue
     canvas.append(draw.Use(forward_animation_group_generated, x=x, y=y, transform=f"rotate({math.degrees(rotation)} {x} {y})"))
     if cross_hatch:
         canvas.append(
             draw.Use(reverse_animation_group_generated, x=x, y=y, transform=f"rotate({math.degrees(rotation)} {x} {y})"))
 for x, y, rotation in reverse_positions:
+    if not check_circle_within_bounds(x, y, distance):
+        continue
     canvas.append(draw.Use(reverse_animation_group_generated, x=x, y=y, transform=f"rotate({math.degrees(rotation)} {x} {y})"))
     if cross_hatch:
         canvas.append(
@@ -317,44 +481,140 @@ for x, y, rotation in reverse_positions:
 #canvas.append(draw.Circle(0, 0, 50, fill='red'))
 #canvas.append(draw.Circle(0, 0, group_distance, fill='none', stroke='red'))
 
-canvas.save_svg('mice.svg')
+if export_svg:
+    print("Rendering SVG")
+    canvas.save_svg('mice.svg')
 
+if export_png:
+    print("Rendering PNG")
+    canvas.rasterize('mice.png')
+
+if export_frames:
+    import shutil
+    print("Rendering Frames")
+    #save all the frames
+    result = canvas.as_animation_frames(fps=fps)
+    if os.path.exists("frames"):
+        shutil.rmtree("frames")
+    os.makedirs("frames", exist_ok=True)
+
+    for i, frame in enumerate(result):
+        print(f"Rendering frame {i:05d}")
+        frame.rasterize(f"frames/frame_{i:05d}.png")
+    print("All frames rendered")
+
+if export_spritesheet:
+    print("Rendering Spritesheet")
+    canvas.as_spritesheet('spritesheet.png', fps=fps,row_length=10, verbose=True)
+
+if export_mp4:
+    print("Rendering MP4")
+    canvas.save_mp4('mice.mp4', fps=fps,verbose=True)
+
+if export_gif:
+    print("Rendering GIF")
+    canvas.save_gif('mice.gif', fps=fps,verbose=True)
+
+if gif_from_frames and export_frames:
+    from PIL import Image
+    print("Rendering GIF from frames")
+    frames = os.listdir("frames")
+    frames.sort()
+    images = []
+    for frame in frames:
+        images.append(Image.open(f"frames/{frame}"))
+
+    assert len(images) > 0, "No frames found"
+
+    common_colors = {}
+    for i in range(1, len(images)):
+        colors = images[i].getcolors(99999)
+        for count, color in colors:
+            if color in common_colors:
+                common_colors[color] += count
+            else:
+                common_colors[color] = count
+    # sort the colors by count
+    common_colors = sorted(common_colors.items(), key=lambda x: x[1], reverse=True)
+
+    max_size = 768 # Bytes
+    palette = []
+    for color, count in common_colors:
+        if len(palette) + len(color) > max_size:
+            break
+        palette.extend(color)
+
+
+    images[0].save('mice_from_frames.gif',
+                   format="GIF",
+                   disposal=2, #after each image, clear to the background color
+                   save_all=True,
+                   append_images=images[1:],
+                   duration=1000/fps,
+                   loop=0,
+                   palette = PIL.ImagePalette.ImagePalette(mode="RGBA", palette=palette)
+                   )
+
+
+if export_webp and export_frames:
+    from PIL import Image
+    print("Rendering WebP from frames")
+
+    frames = os.listdir("frames")
+    frames.sort()
+    images = []
+    for frame in frames:
+        images.append(Image.open(f"frames/{frame}"))
+
+    assert len(images) > 0, "No frames found"
+
+    images[0].save('mice_from_frames.webp',
+                   format="WEBP",
+                   save_all=True,
+                   append_images=images[1:],
+                   background=[0,0,0,0],
+                   duration=1000 / fps,
+                   loop=0,
+                   alpha_quality=100,
+                   method=6,
+                   quality=100,
+                   lossless=True
+                   )
+
+"""
+
+from lottie.exporters import exporters
+from lottie.importers import importers
+from lottie.utils.stripper import float_strip, heavy_strip
+import os
+print("Start Lottie conversion")
+
+
+infile = 'mice.svg'
+suf = os.path.splitext(infile)[1][1:]
+for p in importers:
+    if suf in p.extensions:
+        importer = p
+        break
+assert importer
+outfile = 'mice.webp'
+exporter = exporters.get_from_filename(outfile)
+
+print(f"Loading \"{infile}\" into lottie converter")
+
+an = importer.process(infile)
+
+print(f"Loaded \"{infile}\" into lottie converter")
 fps = 30
-duration = animation_duration_ms / 1000
-time_step = 1 / fps
-steps = int(duration / time_step)
-def gen_frame(t):
-    t = t / duration
-    t = t - int(t)
-    print(t)
-    canvas = draw.Drawing(resolution, resolution, origin="center")
-    canvas.append(draw.Rectangle(-resolution / 2, -resolution / 2, resolution, resolution, fill='None'))
-    forward_animation_group_generated = forward_animation_group.generate_mice_lines(t=t)
-    reverse_animation_group_generated = reverse_animation_group.generate_mice_lines(t=t)
-    for x, y, rotation in forward_positions:
-        canvas.append(draw.Use(forward_animation_group_generated, x=x, y=y,
-                               transform=f"rotate({math.degrees(rotation)} {x} {y})"))
-        if cross_hatch:
-            canvas.append(
-                draw.Use(reverse_animation_group_generated, x=x, y=y,
-                         transform=f"rotate({math.degrees(rotation)} {x} {y})"))
-    for x, y, rotation in reverse_positions:
-        canvas.append(draw.Use(reverse_animation_group_generated, x=x, y=y,
-                               transform=f"rotate({math.degrees(rotation)} {x} {y})"))
-        if cross_hatch:
-            canvas.append(
-                draw.Use(forward_animation_group_generated, x=x, y=y,
-                         transform=f"rotate({math.degrees(rotation)} {x} {y})"))
-    print(f"Saving frame {i}")
-    #canvas.save_png(f"mice_{i:04d}.png")
-    return canvas
+an.frame_rate = fps
+an.out_point = int(fps*animation_duration_ms/1000)
 
-#with draw.frame_animate_video('mice.mp4', gen_frame,duration=0.05) as frame:
-    #for i in range(steps):
-        #frame.draw_frame(i)
+print(f"Converting to lottie file \"{outfile}\"")
 
-#canvas.as_mp4('mice.mp4',fps=10,verbose=True)
-#canvas.save_html('mice.html')
+exporter.process(an, outfile)
+
+print(f"Converted to lottie file \"{outfile}\"")
+"""
 
 
 
