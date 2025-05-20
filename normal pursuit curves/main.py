@@ -16,24 +16,25 @@ remove_duplicate_lines = True
 
 # Mice
 mice_count = 3 # How many mice
-#step_size = 10 # How much each mouse moves in each step
-target_distance_scale = .035 # How much each mouse moves towards the target
+density_factor = 1 # will scale the line count and distance scale by this factor
+target_distance_scale = density_factor * 0.035 # How much each mouse moves towards the target
 distance = 200 # Distance between the mice and 0,0
-step_count = 50 # Number of steps
+step_count = int(50/density_factor) # Number of steps
 rotation = 0 # Rotation offset for mice positioning
 mice_group_count = 5 # Number of mice groups
 reverse = False
 cross_hatch = False # Cross hatch the lines
 
+
 # Animation
-enable_animation = True # Enable or disable the animation
-animation_duration_ms = 2000 # Duration of the animation in milliseconds
+enable_animation = False # Enable or disable the animation
+animation_duration_ms = 1000 # Duration of the animation in milliseconds
 begin_ms = 0 # Start time of the animation in milliseconds
 infinite_repeat = True # Repeat the animation infinitely
 
 # Export options
 export_svg = True # Export the animation as an SVG file
-export_png = False # Export the first frame as a PNG file
+export_png = True # Export the first frame as a PNG file
 export_mp4 = False # Export the animation as an MP4 file
 export_gif = False # Export the animation as a GIF file
 export_frames = False # Export the animation as individual frames
@@ -41,11 +42,11 @@ export_spritesheet = False # Export the animation as a spritesheet
 export_webp = False # Export the animation as a webp file (requires export_frames to be True)
 gif_from_frames = False # Create a GIF from the frames (requires export_frames to be True)
 
-fps = 120
+fps = 30
 
 # Canvas
 target_resolution = 1000
-line_width_scale = 0.001
+line_width_scale = 0.002
 # defining the offset required to place the corner of a group at 0,0
 angle =  2 * math.pi / mice_count
 start_x = -distance * math.cos(angle)
@@ -81,7 +82,7 @@ canvas = draw.Drawing(resolution, resolution, origin="center",
 
 
 #set the background color
-canvas.append(draw.Rectangle(-resolution/2, -resolution/2, resolution, resolution, fill='black',href="https://github.com/Cyph1x"))
+canvas.append(draw.Rectangle(-resolution/2, -resolution/2, resolution, resolution, fill='none'))
 
 class Line(draw.DrawingBasicElement):
     '''A line element that uses the SVG <line> tag.
@@ -184,8 +185,8 @@ class MouseLines:
         self.stroke_linecap = "round"
         self.stroke_linejoin = "round"
         self.shape_rendering = "geometricPrecision"
-        self.make_individual_lines = True
-        self.make_polylines = False
+        self.make_individual_lines = False
+        self.make_polylines = True
         self.use_keyframes = False
 
     def generate_mice_lines(self,g: draw.Group=None):
@@ -228,8 +229,6 @@ class MouseLines:
                 else:
                     mouse_lines.extend([x1, y1, x2, y2])
                     target_lines.extend([x3, y3, x4, y4])
-
-
 
             repeat_count = 'indefinite' if self.repeat else 1
 
@@ -575,10 +574,10 @@ if export_webp and export_frames:
                    background=[0,0,0,0],
                    duration=1000 / fps,
                    loop=0,
-                   alpha_quality=100,
+                   alpha_quality=10,
                    method=6,
-                   quality=100,
-                   lossless=True
+                   quality=40,
+                   lossless=False
                    )
 
 """
